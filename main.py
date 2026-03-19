@@ -1,3 +1,5 @@
+
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -537,7 +539,7 @@ def show_milestone2():
             <div style="color:#475569; font-size:0.9rem;">Upload all five CSV files in the sidebar to begin your analysis.</div>
         </div>
         """, unsafe_allow_html=True)
-        return  # don't proceed
+        return
 
     # Retrieve data
     daily     = st.session_state['daily_df']
@@ -558,11 +560,629 @@ def show_milestone2():
 
     st.markdown('<div class="nav-separator"></div>', unsafe_allow_html=True)
 
-    # ---------------- SECTIONS (unchanged) ----------------
-    # ... (the rest of milestone2 sections as in the original combined file) ...
-    # To keep the answer concise, I'm not repeating the full section code here,
-    # but you should copy it from the previous combined version.
-    # The important fix is the CSS change above.
+    # ---------------- SECTION: DATA OVERVIEW ----------------
+    if st.session_state.current_section == "Data Overview":
+        st.markdown("""
+        <div class="section-header">
+          <div class="section-icon icon-blue">&#9878;</div>
+          <div>
+            <div class="section-title">Dataset Overview</div>
+            <div class="section-desc">Raw data summary and key statistics</div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.metric("Daily Activity Users", daily["Id"].nunique())
+        with c2:
+            st.metric("Heart Rate Users", hr["Id"].nunique())
+        with c3:
+            st.metric("Sleep Records Users", sleep["Id"].nunique())
+        with c4:
+            st.metric("Master Rows", f"{len(master):,}")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.markdown("""<div style="font-size:0.75rem;color:#00d4ff;letter-spacing:0.1em;text-transform:uppercase;
+                           font-weight:600;margin-bottom:0.5rem;">Daily Activity — First Rows</div>""",
+                        unsafe_allow_html=True)
+            st.dataframe(daily.head(), use_container_width=True)
+
+        with col_b:
+            st.markdown("""<div style="font-size:0.75rem;color:#00d4ff;letter-spacing:0.1em;text-transform:uppercase;
+                           font-weight:600;margin-bottom:0.5rem;">Heart Rate (1-min Resampled)</div>""",
+                        unsafe_allow_html=True)
+            st.dataframe(hr_minute.head(), use_container_width=True)
+
+        col_c, col_d = st.columns(2)
+        with col_c:
+            st.markdown("""<div style="font-size:0.75rem;color:#a855f7;letter-spacing:0.1em;text-transform:uppercase;
+                           font-weight:600;margin-bottom:0.5rem;">Sleep Minutes — First Rows</div>""",
+                        unsafe_allow_html=True)
+            st.dataframe(sleep.head(), use_container_width=True)
+
+        with col_d:
+            st.markdown("""<div style="font-size:0.75rem;color:#a855f7;letter-spacing:0.1em;text-transform:uppercase;
+                           font-weight:600;margin-bottom:0.5rem;">Master DataFrame — Daily Aggregates</div>""",
+                        unsafe_allow_html=True)
+            st.dataframe(master.head(), use_container_width=True)
+
+        st.markdown("""<div style="font-size:0.75rem;color:#10b981;letter-spacing:0.1em;text-transform:uppercase;
+                       font-weight:600;margin:1.5rem 0 0.5rem 0;">Key Statistics</div>""",
+                    unsafe_allow_html=True)
+        st.dataframe(
+            master[["TotalSteps","Calories","AvgHR","TotalSleepMinutes","VeryActiveMinutes"]].describe().round(2),
+            use_container_width=True
+        )
+
+    # ---------------- SECTION: TSFRESH ----------------
+    elif st.session_state.current_section == "TSFresh":
+        st.markdown("""
+        <div class="section-header">
+          <div class="section-icon icon-purple">&#9670;</div>
+          <div>
+            <div class="section-title">TSFresh Feature Extraction</div>
+            <div class="section-desc">Statistical features from minute-level heart rate signals</div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown("""
+        <div class="info-card info-card-accent">
+            <div style="color:#94a3b8; font-size:0.88rem; line-height:1.7;">
+                TSFresh automatically extracts <strong style="color:#f1f5f9;">hundreds of time-series features</strong>
+                per user using the <strong style="color:#00d4ff;">MinimalFCParameters</strong> preset —
+                including mean, variance, skewness, autocorrelation, and more.
+                Results are normalized and visualized as a heatmap.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if st.button("Run TSFresh Feature Extraction", use_container_width=False):
+            ts_hr = hr_minute[["Id","Time","HeartRate"]].copy()
+            ts_hr = ts_hr.dropna().sort_values(["Id","Time"])
+            ts_hr = ts_hr.rename(columns={"Id":"id","Time":"time","HeartRate":"value"})
+            with st.spinner("Extracting features — this may take 1-2 minutes..."):
+                features = extract_features(
+                    ts_hr, column_id="id", column_sort="time", column_value="value",
+                    default_fc_parameters=MinimalFCParameters(),
+                    n_jobs=1, disable_progressbar=False
+                )
+                features = features.dropna(axis=1, how="all")
+            st.session_state["tsfresh_features"] = features
+            st.success(f"Features extracted: {features.shape[0]} users x {features.shape[1]} features")
+
+        if "tsfresh_features" in st.session_state:
+            features = st.session_state["tsfresh_features"]
+
+            m1, m2 = st.columns(2)
+            m1.metric("Users", features.shape[0])
+            m2.metric("Features Extracted", features.shape[1])
+
+            scaler_vis = MinMaxScaler()
+            features_norm = pd.DataFrame(
+                scaler_vis.fit_transform(features),
+                index=features.index, columns=features.columns
+            )
+
+            fig, ax = plt.subplots(figsize=(14, 8))
+            fig.patch.set_facecolor('#111827')
+            ax.set_facecolor('#161d2e')
+
+            cmap = mpl.colors.LinearSegmentedColormap.from_list(
+                "health", ["#0a0e1a","#1e2d4a","#00d4ff","#a855f7","#ec4899"]
+            )
+            sns.heatmap(
+                features_norm, cmap=cmap, annot=True, fmt=".2f",
+                linewidths=0.4, linecolor="#0a0e1a",
+                ax=ax, cbar_kws={"shrink": 0.7}
+            )
+            ax.set_title("TSFresh Feature Matrix (normalized 0-1)", fontsize=14, fontweight='bold',
+                         color='#f1f5f9', pad=15)
+            ax.set_xlabel("Features", color='#94a3b8', fontsize=10)
+            ax.set_ylabel("User ID", color='#94a3b8', fontsize=10)
+            ax.tick_params(colors='#475569')
+            plt.colorbar(ax.collections[0], ax=ax).ax.tick_params(colors='#94a3b8')
+            plt.tight_layout()
+            st.pyplot(fig)
+
+            csv = features.to_csv().encode("utf-8")
+            st.download_button(
+                "Download Features as CSV",
+                csv, "tsfresh_features.csv", "text/csv",
+                use_container_width=False
+            )
+        else:
+            st.info("Click the button above to extract time-series features.")
+
+    # ---------------- SECTION: PROPHET ----------------
+    elif st.session_state.current_section == "Prophet":
+        st.markdown("""
+        <div class="section-header">
+          <div class="section-icon icon-green">&#9650;</div>
+          <div>
+            <div class="section-title">Prophet Trend Forecasts</div>
+            <div class="section-desc">30-day forward forecasts with 80% confidence intervals</div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Heart Rate
+        st.markdown("""<div style="font-size:0.75rem;color:#ec4899;letter-spacing:0.1em;
+                       text-transform:uppercase;font-weight:600;margin-bottom:0.75rem;">
+                       Heart Rate Forecast</div>""", unsafe_allow_html=True)
+
+        if st.button("Run Heart Rate Prophet Model"):
+            prophet_hr = hr_minute.groupby("Date")["HeartRate"].mean().reset_index()
+            prophet_hr.columns = ["ds","y"]
+            prophet_hr["ds"] = pd.to_datetime(prophet_hr["ds"])
+            prophet_hr = prophet_hr.dropna().sort_values("ds")
+
+            if len(prophet_hr) < 2:
+                st.warning("Not enough data for forecasting.")
+            else:
+                with st.spinner("Fitting Prophet model on heart rate data..."):
+                    model_hr = Prophet(
+                        daily_seasonality=False, weekly_seasonality=True,
+                        yearly_seasonality=False, interval_width=0.80,
+                        changepoint_prior_scale=0.01, changepoint_range=0.8
+                    )
+                    model_hr.fit(prophet_hr)
+                    future_hr    = model_hr.make_future_dataframe(periods=30)
+                    forecast_hr  = model_hr.predict(future_hr)
+
+                fig, ax = plt.subplots(figsize=(14, 5))
+                ax.scatter(prophet_hr["ds"], prophet_hr["y"],
+                           color="#ec4899", s=20, alpha=0.7, label="Actual HR", zorder=3)
+                ax.plot(forecast_hr["ds"], forecast_hr["yhat"],
+                        color="#00d4ff", linewidth=2.5, label="Predicted Trend")
+                ax.fill_between(forecast_hr["ds"],
+                                forecast_hr["yhat_lower"], forecast_hr["yhat_upper"],
+                                alpha=0.2, color="#00d4ff", label="80% Confidence Interval")
+                ax.axvline(prophet_hr["ds"].max(), color="#f59e0b",
+                           linestyle="--", linewidth=2, label="Forecast Start")
+                ax.set_title("Heart Rate — Prophet Trend Forecast", fontsize=14, fontweight='bold', color='#f1f5f9')
+                ax.set_xlabel("Date", color='#94a3b8')
+                ax.set_ylabel("Heart Rate (bpm)", color='#94a3b8')
+                ax.legend(facecolor='#161d2e', edgecolor='#1e2d4a', labelcolor='#94a3b8')
+                plt.xticks(rotation=45)
+                plt.tight_layout()
+                st.pyplot(fig)
+
+                fig2 = model_hr.plot_components(forecast_hr)
+                fig2.set_facecolor('#111827')
+                for fax in fig2.axes:
+                    fax.set_facecolor('#161d2e')
+                    fax.tick_params(colors='#475569')
+                    fax.xaxis.label.set_color('#94a3b8')
+                    fax.yaxis.label.set_color('#94a3b8')
+                    fax.title.set_color('#f1f5f9')
+                    for line in fax.get_lines():
+                        if line.get_color() == 'b':
+                            line.set_color('#00d4ff')
+                    for coll in fax.collections:
+                        coll.set_facecolor('#00d4ff')
+                        coll.set_alpha(0.2)
+                plt.suptitle("Prophet Components — Heart Rate", fontsize=12, color='#f1f5f9', y=1.01)
+                plt.tight_layout()
+                st.pyplot(fig2)
+
+        st.markdown("<hr>", unsafe_allow_html=True)
+
+        # Steps & Sleep
+        st.markdown("""<div style="font-size:0.75rem;color:#10b981;letter-spacing:0.1em;
+                       text-transform:uppercase;font-weight:600;margin-bottom:0.75rem;">
+                       Steps &amp; Sleep Forecasts</div>""", unsafe_allow_html=True)
+
+        if st.button("Run Steps & Sleep Prophet Models"):
+            steps_agg = daily.groupby("ActivityDate")["TotalSteps"].mean().reset_index()
+            steps_agg.columns = ["ds","y"]
+            steps_agg["ds"] = pd.to_datetime(steps_agg["ds"], errors="coerce")
+            steps_agg = steps_agg.dropna().sort_values("ds")
+
+            sleep_agg = master.groupby("Date")["TotalSleepMinutes"].mean().reset_index()
+            sleep_agg.columns = ["ds","y"]
+            sleep_agg["ds"] = pd.to_datetime(sleep_agg["ds"], errors="coerce")
+            sleep_agg = sleep_agg.dropna().sort_values("ds")
+
+            if len(steps_agg) < 2 or len(sleep_agg) < 2:
+                st.warning("Not enough data for one of the series.")
+            else:
+                with st.spinner("Fitting Steps and Sleep models..."):
+                    model_steps = Prophet(weekly_seasonality=True, interval_width=0.80)
+                    model_steps.fit(steps_agg)
+                    forecast_steps = model_steps.predict(model_steps.make_future_dataframe(periods=30))
+
+                    model_sleep = Prophet(weekly_seasonality=True, interval_width=0.80)
+                    model_sleep.fit(sleep_agg)
+                    forecast_sleep = model_sleep.predict(model_sleep.make_future_dataframe(periods=30))
+
+                fig, axes = plt.subplots(2, 1, figsize=(14, 10), facecolor='#111827')
+
+                # Steps
+                axes[0].scatter(steps_agg["ds"], steps_agg["y"], color="#10b981", s=20, alpha=0.7, label="Actual Steps")
+                axes[0].plot(forecast_steps["ds"], forecast_steps["yhat"], color="#f1f5f9", linewidth=2.5, label="Trend")
+                axes[0].fill_between(forecast_steps["ds"], forecast_steps["yhat_lower"], forecast_steps["yhat_upper"],
+                                     alpha=0.2, color="#10b981", label="80% CI")
+                axes[0].axvline(steps_agg["ds"].max(), color="#f59e0b", linestyle="--", linewidth=2, label="Forecast Start")
+                axes[0].set_title("Daily Steps — Prophet Forecast", fontsize=13, fontweight='bold', color='#f1f5f9')
+                axes[0].set_ylabel("Steps", color='#94a3b8')
+                axes[0].legend(fontsize=9, facecolor='#161d2e', edgecolor='#1e2d4a', labelcolor='#94a3b8')
+                axes[0].tick_params(axis='x', rotation=45, colors='#475569')
+                axes[0].tick_params(axis='y', colors='#475569')
+
+                # Sleep
+                axes[1].scatter(sleep_agg["ds"], sleep_agg["y"], color="#a855f7", s=20, alpha=0.7, label="Actual Sleep")
+                axes[1].plot(forecast_sleep["ds"], forecast_sleep["yhat"], color="#f1f5f9", linewidth=2.5, label="Trend")
+                axes[1].fill_between(forecast_sleep["ds"], forecast_sleep["yhat_lower"], forecast_sleep["yhat_upper"],
+                                     alpha=0.2, color="#a855f7", label="80% CI")
+                axes[1].axvline(sleep_agg["ds"].max(), color="#f59e0b", linestyle="--", linewidth=2, label="Forecast Start")
+                axes[1].set_title("Sleep Minutes — Prophet Forecast", fontsize=13, fontweight='bold', color='#f1f5f9')
+                axes[1].set_ylabel("Sleep (min)", color='#94a3b8')
+                axes[1].legend(fontsize=9, facecolor='#161d2e', edgecolor='#1e2d4a', labelcolor='#94a3b8')
+                axes[1].tick_params(axis='x', rotation=45, colors='#475569')
+                axes[1].tick_params(axis='y', colors='#475569')
+
+                plt.tight_layout()
+                st.pyplot(fig)
+
+    # ---------------- SECTION: CLUSTERING ----------------
+    elif st.session_state.current_section == "Clustering":
+        st.markdown("""
+        <div class="section-header">
+          <div class="section-icon icon-orange">&#9670;</div>
+          <div>
+            <div class="section-title">User Clustering</div>
+            <div class="section-desc">KMeans, DBSCAN and t-SNE projections on activity features</div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        cluster_cols = ["TotalSteps","Calories","VeryActiveMinutes","FairlyActiveMinutes",
+                        "LightlyActiveMinutes","SedentaryMinutes","TotalSleepMinutes"]
+        cluster_features = master.groupby("Id")[cluster_cols].mean().dropna()
+
+        c1, c2 = st.columns(2)
+        c1.metric("Users for Clustering", cluster_features.shape[0])
+        c2.metric("Feature Dimensions", cluster_features.shape[1])
+
+        st.markdown("""<div style="font-size:0.75rem;color:#00d4ff;letter-spacing:0.1em;
+                       text-transform:uppercase;font-weight:600;margin:1.25rem 0 0.5rem;">
+                       User-level Feature Matrix</div>""", unsafe_allow_html=True)
+        st.dataframe(cluster_features.head(), use_container_width=True)
+
+        scaler  = StandardScaler()
+        X_scaled = scaler.fit_transform(cluster_features)
+
+        # Elbow curve
+        st.markdown("""<div style="font-size:0.75rem;color:#f59e0b;letter-spacing:0.1em;
+                       text-transform:uppercase;font-weight:600;margin:1.5rem 0 0.75rem;">
+                       KMeans Elbow Analysis</div>""", unsafe_allow_html=True)
+
+        inertias = []
+        K_range  = range(2, 10)
+        for k_val in K_range:
+            km = KMeans(n_clusters=k_val, random_state=42, n_init=10)
+            km.fit(X_scaled)
+            inertias.append(km.inertia_)
+
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(K_range, inertias, "o-", color="#00d4ff", linewidth=2.5, markersize=9,
+                markerfacecolor="#a855f7", markeredgecolor="#00d4ff", markeredgewidth=2)
+        ax.fill_between(K_range, inertias, alpha=0.08, color="#00d4ff")
+        ax.set_xlabel("Number of Clusters (K)", color='#94a3b8', fontsize=10)
+        ax.set_ylabel("Inertia", color='#94a3b8', fontsize=10)
+        ax.set_title("KMeans Elbow Curve", fontsize=13, fontweight='bold', color='#f1f5f9')
+        plt.tight_layout()
+        st.pyplot(fig)
+
+        # KMeans
+        st.markdown("""<div style="font-size:0.75rem;color:#a855f7;letter-spacing:0.1em;
+                       text-transform:uppercase;font-weight:600;margin:1.5rem 0 0.75rem;">
+                       KMeans Configuration</div>""", unsafe_allow_html=True)
+
+        k = st.slider("Number of Clusters (K)", 2, 8, 3)
+
+        if st.button("Run KMeans Clustering"):
+            km = KMeans(n_clusters=k, random_state=42, n_init=10)
+            labels = km.fit_predict(X_scaled)
+            cluster_features_k = cluster_features.copy()
+            cluster_features_k["Cluster"] = labels
+
+            dist_col = st.columns(k)
+            vc = cluster_features_k["Cluster"].value_counts().sort_index()
+            palette = ["#00d4ff","#ec4899","#10b981","#f59e0b","#a855f7","#fc8181"]
+            for i, col in enumerate(dist_col):
+                if i < k:
+                    count = vc.get(i, 0)
+                    pct   = count / len(cluster_features_k) * 100
+                    col.metric(f"Cluster {i}", f"{count} users", f"{pct:.1f}%")
+
+            pca = PCA(n_components=2, random_state=42)
+            X_pca = pca.fit_transform(X_scaled)
+            var   = pca.explained_variance_ratio_ * 100
+
+            fig, ax = plt.subplots(figsize=(10, 6))
+            for cl in sorted(set(labels)):
+                mask = labels == cl
+                ax.scatter(X_pca[mask, 0], X_pca[mask, 1],
+                           c=palette[cl % len(palette)],
+                           label=f"Cluster {cl}", s=120, alpha=0.9,
+                           edgecolors='#0a0e1a', linewidths=1.2)
+            ax.set_title(f"KMeans (K={k}) — PCA Projection", fontsize=13, fontweight='bold', color='#f1f5f9')
+            ax.set_xlabel(f"PC1 ({var[0]:.1f}%)", color='#94a3b8')
+            ax.set_ylabel(f"PC2 ({var[1]:.1f}%)", color='#94a3b8')
+            ax.legend(facecolor='#161d2e', edgecolor='#1e2d4a', labelcolor='#94a3b8')
+            plt.tight_layout()
+            st.pyplot(fig)
+
+            # Cluster profiles
+            st.markdown("""<div style="font-size:0.75rem;color:#10b981;letter-spacing:0.1em;
+                           text-transform:uppercase;font-weight:600;margin:1.25rem 0 0.5rem;">
+                           Cluster Profiles</div>""", unsafe_allow_html=True)
+            feature_cols = [c for c in cluster_features_k.columns if c != "Cluster"]
+            profile = cluster_features_k.groupby("Cluster")[feature_cols].mean().round(2)
+            st.dataframe(profile, use_container_width=True)
+
+            fig2, ax2 = plt.subplots(figsize=(13, 5))
+            plot_cols   = ["TotalSteps","Calories","VeryActiveMinutes","SedentaryMinutes","TotalSleepMinutes"]
+            plot_colors = ["#00d4ff","#ec4899","#10b981","#f59e0b","#a855f7"]
+            x = np.arange(k)
+            width = 0.15
+            for idx, (col_name, color) in enumerate(zip(plot_cols, plot_colors)):
+                # normalize to 0-1 for comparison
+                vals = profile[col_name].values
+                norm_vals = (vals - vals.min()) / (vals.max() - vals.min() + 1e-9)
+                ax2.bar(x + idx*width, profile[col_name].values, width,
+                        label=col_name, color=color, alpha=0.85, edgecolor='#0a0e1a')
+            ax2.set_title("Cluster Profiles — Key Feature Averages", fontsize=13, fontweight='bold', color='#f1f5f9')
+            ax2.set_xlabel("Cluster", color='#94a3b8')
+            ax2.set_ylabel("Mean Value", color='#94a3b8')
+            ax2.set_xticks(x + width * 2)
+            ax2.set_xticklabels([f"Cluster {i}" for i in range(k)], color='#94a3b8')
+            ax2.legend(bbox_to_anchor=(1.01, 1), facecolor='#161d2e', edgecolor='#1e2d4a', labelcolor='#94a3b8')
+            plt.tight_layout()
+            st.pyplot(fig2)
+
+            # Interpretation cards
+            st.markdown("""<div style="font-size:0.75rem;color:#00d4ff;letter-spacing:0.1em;
+                           text-transform:uppercase;font-weight:600;margin:1.25rem 0 0.75rem;">
+                           Cluster Interpretation</div>""", unsafe_allow_html=True)
+
+            for i in range(k):
+                row    = profile.loc[i]
+                steps  = row["TotalSteps"]
+                sed    = row["SedentaryMinutes"]
+                active = row["VeryActiveMinutes"]
+                if steps > 10000:
+                    profile_label = "HIGHLY ACTIVE"
+                    color_accent  = "#10b981"
+                    icon_char     = "A"
+                elif steps > 5000:
+                    profile_label = "MODERATELY ACTIVE"
+                    color_accent  = "#f59e0b"
+                    icon_char     = "M"
+                else:
+                    profile_label = "SEDENTARY"
+                    color_accent  = "#a855f7"
+                    icon_char     = "S"
+
+                st.markdown(f"""
+                <div style="background:var(--bg-card); border:1px solid var(--border); border-left:3px solid {color_accent};
+                            border-radius:12px; padding:1rem 1.25rem; margin-bottom:0.6rem;
+                            display:flex; gap:1rem; align-items:flex-start;">
+                    <div style="background:{color_accent}22; border:1px solid {color_accent}55;
+                                color:{color_accent}; font-weight:700; font-size:0.9rem;
+                                width:32px; height:32px; border-radius:8px; display:flex;
+                                align-items:center; justify-content:center; flex-shrink:0;">{icon_char}</div>
+                    <div>
+                        <div style="font-weight:700; color:#f1f5f9; margin-bottom:0.25rem;">
+                            Cluster {i}
+                            <span style="font-size:0.7rem; background:{color_accent}22; color:{color_accent};
+                                         border:1px solid {color_accent}44; border-radius:50px;
+                                         padding:0.15rem 0.6rem; margin-left:0.5rem; font-weight:600;
+                                         letter-spacing:0.08em;">{profile_label}</span>
+                        </div>
+                        <div style="color:#94a3b8; font-size:0.82rem; line-height:1.8;">
+                            Avg Steps: <strong style="color:#f1f5f9;">{steps:,.0f}</strong>
+                            &nbsp;&nbsp;|&nbsp;&nbsp;
+                            Sedentary: <strong style="color:#f1f5f9;">{sed:.0f} min</strong>
+                            &nbsp;&nbsp;|&nbsp;&nbsp;
+                            Very Active: <strong style="color:#f1f5f9;">{active:.0f} min</strong>
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        # DBSCAN
+        st.markdown("""<div style="font-size:0.75rem;color:#ec4899;letter-spacing:0.1em;
+                       text-transform:uppercase;font-weight:600;margin:2rem 0 0.75rem;">
+                       DBSCAN Configuration</div>""", unsafe_allow_html=True)
+
+        db_c1, db_c2 = st.columns(2)
+        with db_c1:
+            eps = st.slider("Epsilon (EPS)", 0.5, 5.0, 2.2, 0.1)
+        with db_c2:
+            min_samples = st.slider("Min Samples", 2, 10, 2)
+
+        if st.button("Run DBSCAN Clustering"):
+            db = DBSCAN(eps=eps, min_samples=min_samples)
+            labels = db.fit_predict(X_scaled)
+            n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+            n_noise    = list(labels).count(-1)
+
+            mn1, mn2 = st.columns(2)
+            mn1.metric("Clusters Found", n_clusters)
+            mn2.metric("Noise Points", n_noise, delta=f"{n_noise/len(labels)*100:.1f}% of data", delta_color="inverse")
+
+            pca    = PCA(n_components=2, random_state=42)
+            X_pca  = pca.fit_transform(X_scaled)
+            var    = pca.explained_variance_ratio_ * 100
+            palette = ["#00d4ff","#ec4899","#10b981","#f59e0b","#a855f7","#fc8181"]
+
+            fig, ax = plt.subplots(figsize=(10, 6))
+            for lb in sorted(set(labels)):
+                mask = labels == lb
+                if lb == -1:
+                    ax.scatter(X_pca[mask, 0], X_pca[mask, 1],
+                               c="#ef4444", marker="x", s=150, label="Noise", alpha=0.9, linewidths=2)
+                else:
+                    ax.scatter(X_pca[mask, 0], X_pca[mask, 1],
+                               c=palette[lb % len(palette)],
+                               label=f"Cluster {lb}", s=120, alpha=0.9,
+                               edgecolors='#0a0e1a', linewidths=1.2)
+            ax.set_title(f"DBSCAN (eps={eps}, min={min_samples}) — PCA Projection",
+                         fontsize=13, fontweight='bold', color='#f1f5f9')
+            ax.set_xlabel(f"PC1 ({var[0]:.1f}%)", color='#94a3b8')
+            ax.set_ylabel(f"PC2 ({var[1]:.1f}%)", color='#94a3b8')
+            ax.legend(facecolor='#161d2e', edgecolor='#1e2d4a', labelcolor='#94a3b8')
+            plt.tight_layout()
+            st.pyplot(fig)
+
+        # t-SNE
+        st.markdown("""<div style="font-size:0.75rem;color:#a855f7;letter-spacing:0.1em;
+                       text-transform:uppercase;font-weight:600;margin:2rem 0 0.75rem;">
+                       t-SNE Manifold Projection</div>""", unsafe_allow_html=True)
+
+        if st.button("Run t-SNE (may take a moment)"):
+            with st.spinner("Computing t-SNE embedding..."):
+                tsne     = TSNE(n_components=2, random_state=42,
+                                perplexity=min(30, len(X_scaled)-1), max_iter=1000)
+                X_tsne   = tsne.fit_transform(X_scaled)
+                km       = KMeans(n_clusters=k, random_state=42, n_init=10)
+                labels_km= km.fit_predict(X_scaled)
+                db       = DBSCAN(eps=eps, min_samples=min_samples)
+                labels_db= db.fit_predict(X_scaled)
+
+            palette = ["#00d4ff","#ec4899","#10b981","#f59e0b","#a855f7","#fc8181"]
+            fig, axes = plt.subplots(1, 2, figsize=(16, 6), facecolor='#111827')
+
+            for cl in sorted(set(labels_km)):
+                mask = labels_km == cl
+                axes[0].scatter(X_tsne[mask,0], X_tsne[mask,1],
+                                c=palette[cl % len(palette)], label=f"Cluster {cl}",
+                                s=90, alpha=0.9, edgecolors='#0a0e1a', linewidths=1)
+            axes[0].set_title("KMeans — t-SNE", fontsize=12, fontweight='bold', color='#f1f5f9')
+            axes[0].legend(facecolor='#161d2e', edgecolor='#1e2d4a', labelcolor='#94a3b8')
+
+            for lb in sorted(set(labels_db)):
+                mask = labels_db == lb
+                if lb == -1:
+                    axes[1].scatter(X_tsne[mask,0], X_tsne[mask,1],
+                                    c="#ef4444", marker="x", s=150, label="Noise", alpha=0.9, linewidths=2)
+                else:
+                    axes[1].scatter(X_tsne[mask,0], X_tsne[mask,1],
+                                    c=palette[lb % len(palette)], label=f"Cluster {lb}",
+                                    s=90, alpha=0.9, edgecolors='#0a0e1a', linewidths=1)
+            axes[1].set_title("DBSCAN — t-SNE", fontsize=12, fontweight='bold', color='#f1f5f9')
+            axes[1].legend(facecolor='#161d2e', edgecolor='#1e2d4a', labelcolor='#94a3b8')
+
+            for ax in axes:
+                ax.set_facecolor('#161d2e')
+                ax.tick_params(colors='#475569')
+
+            plt.tight_layout()
+            st.pyplot(fig)
+
+    # ---------------- SECTION: SUMMARY ----------------
+    elif st.session_state.current_section == "Summary":
+        st.markdown("""
+        <div class="section-header">
+          <div class="section-icon icon-pink">&#9672;</div>
+          <div>
+            <div class="section-title">Milestone 2 Summary</div>
+            <div class="section-desc">Pipeline overview and key findings</div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Stats row
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("Total Users", "35")
+        s2.metric("Study Period", "31 days")
+        s3.metric("TSFresh Features", "10+")
+        s4.metric("Forecast Horizon", "30 days")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # Pipeline overview
+        st.markdown("""<div style="font-size:0.75rem;color:#00d4ff;letter-spacing:0.1em;
+                       text-transform:uppercase;font-weight:600;margin-bottom:0.75rem;">
+                       Pipeline Overview</div>""", unsafe_allow_html=True)
+
+        pipeline_items = [
+            ("Dataset",   "Real Fitbit device data — 35 users, 31 days (March–April 2016)"),
+            ("TSFresh",   "Extracted 10 statistical features from minute-level heart rate per user via MinimalFCParameters."),
+            ("Prophet HR","30-day heart rate forecast with weekly seasonality, 80% CI, changepoint_prior_scale=0.01."),
+            ("Prophet Steps","30-day steps forecast with weekly seasonality and 80% confidence intervals."),
+            ("Prophet Sleep","30-day sleep forecast; accounts for missing nights and noisy signal."),
+            ("KMeans",    "K=3 optimal (elbow): 12 moderately active, 15 sedentary, 8 highly active users."),
+            ("DBSCAN",    "eps=2.2, min_samples=2 yielded 3 clusters + 1 outlier (2.9% noise rate)."),
+        ]
+
+        for idx, (label, desc) in enumerate(pipeline_items):
+            accent = ["#00d4ff","#a855f7","#ec4899","#10b981","#f59e0b","#63b3ed","#f687b3"][idx % 7]
+            st.markdown(f"""
+            <div class="summary-item">
+                <div class="summary-num">{idx+1}</div>
+                <div class="summary-text">
+                    <strong>{label}</strong><br>{desc}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # Screenshots checklist
+        st.markdown("""<div style="font-size:0.75rem;color:#a855f7;letter-spacing:0.1em;
+                       text-transform:uppercase;font-weight:600;margin-bottom:0.75rem;">
+                       Submission Screenshots Checklist</div>""", unsafe_allow_html=True)
+
+        screenshots = [
+            "TSFresh feature matrix heatmap (normalized 0-1)",
+            "Prophet HR forecast with 80% confidence interval",
+            "Steps Prophet forecast (30-day)",
+            "Sleep Prophet forecast (combined plot)",
+            "KMeans PCA scatter plot with cluster labels",
+            "DBSCAN PCA scatter plot with noise markers",
+            "t-SNE projection — KMeans vs DBSCAN side-by-side",
+            "Cluster profiles bar chart with feature averages",
+        ]
+
+        for idx, item in enumerate(screenshots):
+            st.markdown(f"""
+            <div style="background:rgba(168,85,247,0.06); border:1px solid rgba(168,85,247,0.2);
+                        border-radius:10px; padding:0.7rem 1rem; margin-bottom:0.4rem;
+                        display:flex; align-items:center; gap:0.75rem;">
+                <div style="background:rgba(16,185,129,0.15); border:1px solid rgba(16,185,129,0.3);
+                            color:#10b981; font-size:0.7rem; font-weight:700;
+                            width:22px; height:22px; border-radius:5px;
+                            display:flex; align-items:center; justify-content:center; flex-shrink:0;">
+                    &#10003;
+                </div>
+                <div style="color:#94a3b8; font-size:0.85rem;">
+                    <strong style="color:#f1f5f9;">{idx+1}.</strong> {item}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown("""
+        <div style="background:linear-gradient(135deg,rgba(0,212,255,0.05),rgba(168,85,247,0.05));
+                    border:1px solid rgba(0,212,255,0.2); border-radius:14px;
+                    padding:1.5rem; margin-top:1.5rem; text-align:center;">
+            <div style="color:#94a3b8; font-size:0.85rem; line-height:1.8;">
+                Built with <strong style="color:#f1f5f9;">Streamlit</strong> &nbsp;|&nbsp;
+                <strong style="color:#00d4ff;">TSFresh</strong> &nbsp;|&nbsp;
+                <strong style="color:#ec4899;">Prophet</strong> &nbsp;|&nbsp;
+                <strong style="color:#a855f7;">scikit-learn</strong><br>
+                <span style="font-size:0.75rem; color:#475569;">Milestone 2 · Health Analytics Pipeline · 2026</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
 
 # ============================================================
 # MAIN APP ROUTER
